@@ -11,3 +11,20 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+
+  # Second chain template — uncomment after creating .env.optimism with its own
+  # RPC url, CHAIN_ID=10, and a SEPARATE key funded only with a small gas float.
+  # Generate targets first: CHAIN=optimism OUT=targets.optimism.js node discover.js
+  # bot-optimism:
+  #   build: .
+  #   restart: unless-stopped
+  #   env_file: .env.optimism
+  #   environment: { TARGETS_FILE: targets.optimism.js }
+  #   read_only: true
+  #   cap_drop: [ALL]
+  #   security_opt: [no-new-privileges:true]
+  #   tmpfs: [/tmp]
+  #   mem_limit: 300m
+  #   logging:
+  #     driver: json-file
+  #     options: { max-size: "10m", max-file: "3" }

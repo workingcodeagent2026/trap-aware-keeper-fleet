@@ -4,7 +4,8 @@ import { ethers } from 'ethers';
 const GAS_PRICE_ORACLE = '0x420000000000000000000000000000000000000F';
 const ORACLE_ABI = ['function getL1Fee(bytes) view returns (uint256)'];
 
-export function makeL1FeeEstimator(provider) {
+// Works on any OP-stack chain (Base, Optimism, Mode, Fraxtal) — same predeploy.
+export function makeL1FeeEstimator(provider, chainId = 8453) {
   const oracle = new ethers.Contract(GAS_PRICE_ORACLE, ORACLE_ABI, provider);
 
   // The L1 fee scales with calldata size, so the oracle needs the
@@ -12,7 +13,7 @@ export function makeL1FeeEstimator(provider) {
   return async function estimateL1Fee(req) {
     const unsigned = ethers.Transaction.from({
       type: 2,
-      chainId: 8453,
+      chainId,
       to: req.to,
       data: req.data,
       value: 0n,
