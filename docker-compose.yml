@@ -29,6 +29,22 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Read-only Morpho Blue liquidation watcher (Base) — alerts when a priced,
+  # non-dust position stays liquidatable past the pro-bot reaction window.
+  morpho-watcher:
+    build: .
+    command: ["node", "morpho-watcher.js"]
+    restart: unless-stopped
+    env_file: .env
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    mem_limit: 300m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Second chain template — uncomment after creating .env.optimism with its own
   # RPC url, CHAIN_ID=10, and a SEPARATE key funded only with a small gas float.
   # Generate targets first: CHAIN=optimism OUT=targets.optimism.js node discover.js
