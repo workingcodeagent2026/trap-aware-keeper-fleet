@@ -66,8 +66,15 @@ async function poll() {
   if (!items) { log('warn', 'API returned no data', { errors: JSON.stringify(res?.errors ?? null).slice(0, 200) }); return; }
 
   const now = Date.now();
+  // A real opportunity is a position that JUST crossed the line: HF slightly
+  // under 1 and collateral spot value still covering the debt. Positions with
+  // collateral << debt or HF near zero are depeg/bad-debt traps — the oracle
+  // says the collateral is worth more than the market will pay for it, and
+  // "liquidating" them means buying worthless tokens with real money.
   const eligible = items.filter((p) =>
-    (p.state?.borrowAssetsUsd ?? 0) >= Number(MIN_DEBT_USD));
+    (p.state?.borrowAssetsUsd ?? 0) >= Number(MIN_DEBT_USD) &&
+    (p.state?.collateralUsd ?? 0) >= (p.state?.borrowAssetsUsd ?? 0) &&
+    p.healthFactor >= 0.7);
   const liveKeys = new Set();
 
   const fresh = [];
