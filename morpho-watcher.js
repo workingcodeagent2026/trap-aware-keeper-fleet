@@ -25,7 +25,7 @@ const QUERY = `{
       healthFactor
       user { address }
       state { borrowAssetsUsd collateralUsd }
-      market { marketId lltv loanAsset { symbol } collateralAsset { symbol } }
+      market { marketId lltv loanAsset { symbol } collateralAsset { symbol address } }
     }
   }
 }`;
@@ -50,6 +50,26 @@ function liquidationBonusUsd(debtUsd, lltvWad) {
   const lltv = Number(lltvWad) / 1e18;
   const lif = Math.min(1.15, 1 / (0.3 * lltv + 0.7));
   return debtUsd * (lif - 1);
+}
+
+// A bonus is only real if the seized collateral can be SOLD. Tokenized stocks
+// and illiquid long-tail tokens sit "liquidatable" forever because dumping
+// them into a four-figure pool costs more in slippage than the bonus pays
+// (seen with wbCOIN: $19 bonus, $1.9k total DEX liquidity). Require deep
+// enough exit liquidity before calling it an opportunity.
+const liquidityCache = new Map(); // token -> { usd, at }
+async function exitLiquidityUsd(tokenAddress) {
+  const hit = liquidityCache.get(tokenAddress);
+  if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit.usd;
+  let usd = 0;
+  try {
+    const res = await fetch(
+      `https://api.geckoterminal.com/api/v2/networks/base/tokens/${tokenAddress}/pools`,
+    ).then((r) => r.json());
+    for (const p of res?.data ?? []) usd += Number(p.attributes?.reserve_in_usd || 0);
+  } catch { usd = -1; } // lookup failed — unknown, let the alert through flagged
+  liquidityCache.set(tokenAddress, { usd, at: Date.now() });
+  return usd;
 }
 
 // key -> { firstSeen, alerted, debtUsd }
@@ -88,18 +108,27 @@ async function poll() {
     const bonus = liquidationBonusUsd(t.debtUsd, p.market.lltv);
     t.alerted = true; // one decision per position, alert-worthy or not
     if (bonus < Number(MIN_BONUS_USD)) continue; // marginal crumbs pros ignore — so do we
+    // Exit check: selling the seized collateral must not eat the bonus.
+    const liq = await exitLiquidityUsd(p.market.collateralAsset?.address ?? '');
+    if (liq >= 0 && liq < t.debtUsd * 10) {
+      log('info', 'skipped: exit too illiquid', {
+        market: `${p.market.collateralAsset?.symbol}/${p.market.loanAsset?.symbol}`,
+        debtUsd: t.debtUsd, estBonusUsd: bonus, dexLiquidityUsd: Math.round(liq),
+      });
+      continue;
+    }
     log('info', 'liquidatable position past pro window', {
       market: `${p.market.collateralAsset?.symbol}/${p.market.loanAsset?.symbol}`,
       healthFactor: p.healthFactor, debtUsd: t.debtUsd,
       collateralUsd: p.state.collateralUsd, estBonusUsd: bonus,
       ageSec: Math.round((now - t.firstSeen) / 1000),
     });
-    fresh.push({ p, bonus });
+    fresh.push({ p, bonus, liq });
   }
   if (fresh.length > 0) {
-    const lines = fresh.sort((a, b) => b.bonus - a.bonus).slice(0, 5).map(({ p, bonus }) =>
-      `${p.market.collateralAsset?.symbol}/${p.market.loanAsset?.symbol} — debt $${p.state.borrowAssetsUsd.toFixed(0)}, HF ${p.healthFactor.toFixed(3)}, est. bonus $${bonus.toFixed(2)}`);
-    await notify(`🎯 ${fresh.length} Morpho liquidation(s) sitting unclaimed >${Math.round(Number(ALERT_AFTER_MS) / 60000)}min on Base:\n${lines.join('\n')}`);
+    const lines = fresh.sort((a, b) => b.bonus - a.bonus).slice(0, 5).map(({ p, bonus, liq }) =>
+      `${p.market.collateralAsset?.symbol}/${p.market.loanAsset?.symbol} — debt $${p.state.borrowAssetsUsd.toFixed(0)}, HF ${p.healthFactor.toFixed(3)}, est. bonus $${bonus.toFixed(2)}, exit liq ${liq < 0 ? 'UNKNOWN — verify!' : '$' + Math.round(liq)}`);
+    await notify(`🎯 ${fresh.length} Morpho liquidation(s) with real exit liquidity, unclaimed >${Math.round(Number(ALERT_AFTER_MS) / 60000)}min on Base:\n${lines.join('\n')}`);
   }
 
   // Positions gone from the eligible set were liquidated (or recovered).
