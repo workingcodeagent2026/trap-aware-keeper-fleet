@@ -20,6 +20,9 @@ const [vaults, tvls] = await Promise.all([
 const chainTvl = tvls[CHAIN_IDS[CHAIN]] || {};
 const rows = vaults
   .filter(v => v.chain === CHAIN && v.status === 'active' && v.strategy)
+  // CLM ("cow") vaults: callReward() reports total fees, not the caller's cut —
+  // it overstates the payout ~1000x and every harvest loses money. Exclude them.
+  .filter(v => !v.id.includes('cow'))
   .map(v => ({ id: v.id, strategy: v.strategy, tvl: chainTvl[v.id] || 0 }))
   .filter(v => v.tvl >= MIN_TVL && v.tvl <= MAX_TVL)
   .sort((a, b) => a.tvl - b.tvl)

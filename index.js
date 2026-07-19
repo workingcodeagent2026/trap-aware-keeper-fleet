@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { ethers } from 'ethers';
 import { EXECUTE_TRANSACTIONS, evaluateEconomics } from './safety.js';
 import { makeL1FeeEstimator } from './gas.js';
+import { sumTokenReceived, isRewardHonest } from './verify.js';
 
 // Per-chain target lists: TARGETS_FILE=targets.optimism.js for a second chain.
 const { TARGETS, BEEFY_STRATEGY_ABI } = await import(`./${process.env.TARGETS_FILE || 'targets.js'}`);
@@ -20,6 +21,11 @@ const {
   MIN_NET_PROFIT_WEI = '0',
   // Mute a strategy after N consecutive failures, for M scans.
   MUTE_AFTER_FAILURES = '3', MUTE_SCANS = '60',
+  // Reward honesty: callReward() is a prediction. After each harvest we check
+  // the wrapped-native actually received; below this ratio (in thousandths of
+  // the prediction) the strategy is permanently blacklisted for this process.
+  WRAPPED_NATIVE = '0x4200000000000000000000000000000000000006',
+  REWARD_HONESTY_MILLI = '500',
 } = process.env;
 
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -54,6 +60,7 @@ const minNetProfitWei = BigInt(MIN_NET_PROFIT_WEI);
 const safetyMultiplier = Number(GAS_SAFETY_MULTIPLIER);
 const muteAfterFailures = Number(MUTE_AFTER_FAILURES);
 const muteScans = Number(MUTE_SCANS);
+const rewardHonestyMilli = BigInt(REWARD_HONESTY_MILLI);
 
 const estimateL1Fee = L1_FEE === 'oracle' ? makeL1FeeEstimator(provider, Number(CHAIN_ID)) : null;
 
@@ -62,6 +69,7 @@ const strategies = TARGETS.map((t) => ({
   contract: new ethers.Contract(t.address, BEEFY_STRATEGY_ABI, wallet),
   failCount: 0,
   mutedUntil: 0,
+  blacklisted: false,
 }));
 
 const eth = (wei) => ethers.formatEther(wei);
@@ -121,8 +129,19 @@ async function tryStrategy(s, ctx) {
     log('info', 'Harvest sent', { name: s.cfg.name, hash: tx.hash });
     await notify(`📤 ${s.cfg.name} harvest sent\n${tx.hash}`);
     const rc = await tx.wait();
-    log('info', 'Harvest confirmed', { name: s.cfg.name, hash: tx.hash, block: rc.blockNumber });
-    await notify(`✅ ${s.cfg.name} harvested (block ${rc.blockNumber}) ~${eth(rewardWei)} ETH`);
+    // Trust-but-verify: compare what actually landed in the wallet against
+    // the callReward() prediction. Liars get one tx, then never again.
+    const actualWei = sumTokenReceived(rc.logs, WRAPPED_NATIVE, self);
+    if (!isRewardHonest(actualWei, rewardWei, rewardHonestyMilli)) {
+      s.blacklisted = true;
+      log('error', 'callReward overstated payout — strategy blacklisted', {
+        name: s.cfg.name, hash: tx.hash, predictedEth: eth(rewardWei), actualEth: eth(actualWei),
+      });
+      await notify(`🚫 ${s.cfg.name} BLACKLISTED\nPromised ${eth(rewardWei)} ETH, paid ${eth(actualWei)}\n${tx.hash}`);
+      return;
+    }
+    log('info', 'Harvest confirmed', { name: s.cfg.name, hash: tx.hash, block: rc.blockNumber, actualEth: eth(actualWei) });
+    await notify(`✅ ${s.cfg.name} harvested (block ${rc.blockNumber}) — received ${eth(actualWei)} ETH`);
   } catch (err) {
     s.failCount += 1;
     log('warn', 'Strategy failed', { name: s.cfg.name, error: err.shortMessage ?? err.message, failCount: s.failCount });
@@ -149,7 +168,7 @@ async function scan() {
   }
   // Sequential: one wallet = one nonce at a time, no collisions.
   for (const s of strategies) {
-    if (s.mutedUntil > scanCount) continue;
+    if (s.blacklisted || s.mutedUntil > scanCount) continue;
     await tryStrategy(s, ctx);
   }
 }
