@@ -12,6 +12,23 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Read-only opportunity detector — no key used, sends Telegram alerts when a
+  # chain has genuinely profitable harvests, a new chain launches, or new
+  # vaults appear. Uses .env only for the Telegram credentials.
+  scanner:
+    build: .
+    command: ["node", "scanner.js"]
+    restart: unless-stopped
+    env_file: .env
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    mem_limit: 300m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Second chain template — uncomment after creating .env.optimism with its own
   # RPC url, CHAIN_ID=10, and a SEPARATE key funded only with a small gas float.
   # Generate targets first: CHAIN=optimism OUT=targets.optimism.js node discover.js
