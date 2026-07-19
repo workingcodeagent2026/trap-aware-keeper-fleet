@@ -21,6 +21,7 @@ money to it.
 | **Wrong-token payouts** | strategies paying in non-native tokens | Payout arrives, but in a token the bot doesn't watch or value — invisible to a wrapped-native check, unvaluable without a price feed. | Receipt scan groups *every* ERC-20 transfer received; unexpected-token payers are blacklisted with the token addresses logged for diagnosis. |
 | **Volume-less liquidity** | pools with depth but no trades | Pool TVL passes a depth check while 24h volume is ~$0 — paint on a wall; the depth never absorbs a real sale. | Exit check requires both depth ≥ 10× debt *and* 24h volume ≥ the debt. |
 | **The silence signal** | anything pros refuse for 24h+ | An "opportunity" the entire professional market has examined and declined has a defect you haven't identified — their silence is the detector. | Positions surviving eligible >24h are flagged trap-suspect and counted in the daily summary. |
+| **The subsidized sweeper** | Beefy's own [cowllector](https://github.com/beefyfinance/beefy-cowllector-v2) | The deepest trap isn't on-chain at all: the protocol itself runs an official keeper harvesting every vault daily, explicitly "not focusing on being profitable." You aren't racing bots for crumbs — you're racing an entity paid to sweep at a loss. The niche was never open. | Before competing for any keeper bounty, search for the protocol's own keeper repo. If the incentive's issuer also runs the collector, the expected value is structurally zero. |
 
 The meta-lesson: anything that reaches you slowly is usually unclaimable, and
 anything claimable never reaches you slowly. These tools exist to find the
@@ -92,6 +93,22 @@ incident (the cow-vault losses: −0.000255 ETH total) happened *within* those
 guardrails — the gas ceiling capped the damage at about a dollar, and the fix
 became the receipt-verification layer. Guardrails don't prevent lessons;
 they make them affordable.
+
+## Prior art & positioning
+
+- [Artemis](https://github.com/paradigmxyz/artemis) (Paradigm) is the
+  execution-side framework: collectors → strategies → executors, built for
+  speed. This repo is the *truth-side* complement — deciding whether an
+  opportunity is real before anything executes.
+- [beefy-cowllector-v2](https://github.com/beefyfinance/beefy-cowllector-v2)
+  is Beefy's own subsidized harvester — and discovering it is itself
+  documented above as trap #9.
+- Token-safety APIs (GoPlus, honeypot.is) score scam tokens for traders;
+  this repo verifies keeper *economics*: promise vs. receipt, oracle vs.
+  spot, depth vs. volume, and the market's own revealed judgment.
+
+To our knowledge no other project packages the economic-truth layer for
+keepers with a documented on-chain incident behind every detector.
 
 ## Disclaimers
 
