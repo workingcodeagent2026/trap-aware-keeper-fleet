@@ -57,19 +57,22 @@ function liquidationBonusUsd(debtUsd, lltvWad) {
 // them into a four-figure pool costs more in slippage than the bonus pays
 // (seen with wbCOIN: $19 bonus, $1.9k total DEX liquidity). Require deep
 // enough exit liquidity before calling it an opportunity.
-const liquidityCache = new Map(); // token -> { usd, at }
-async function exitLiquidityUsd(tokenAddress) {
+const liquidityCache = new Map(); // token -> { usd, vol24, at }
+async function exitLiquidity(tokenAddress) {
   const hit = liquidityCache.get(tokenAddress);
-  if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit.usd;
-  let usd = 0;
+  if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit;
+  let entry = { usd: 0, vol24: 0, at: Date.now() };
   try {
     const res = await fetch(
       `https://api.geckoterminal.com/api/v2/networks/base/tokens/${tokenAddress}/pools`,
     ).then((r) => r.json());
-    for (const p of res?.data ?? []) usd += Number(p.attributes?.reserve_in_usd || 0);
-  } catch { usd = -1; } // lookup failed — unknown, let the alert through flagged
-  liquidityCache.set(tokenAddress, { usd, at: Date.now() });
-  return usd;
+    for (const p of res?.data ?? []) {
+      entry.usd += Number(p.attributes?.reserve_in_usd || 0);
+      entry.vol24 += Number(p.attributes?.volume_usd?.h24 || 0);
+    }
+  } catch { entry = { usd: -1, vol24: -1, at: Date.now() }; } // unknown — flag, don't block
+  liquidityCache.set(tokenAddress, entry);
+  return entry;
 }
 
 // key -> { firstSeen, alerted, debtUsd }
@@ -109,11 +112,15 @@ async function poll() {
     t.alerted = true; // one decision per position, alert-worthy or not
     if (bonus < Number(MIN_BONUS_USD)) continue; // marginal crumbs pros ignore — so do we
     // Exit check: selling the seized collateral must not eat the bonus.
-    const liq = await exitLiquidityUsd(p.market.collateralAsset?.address ?? '');
-    if (liq >= 0 && liq < t.debtUsd * 10) {
-      log('info', 'skipped: exit too illiquid', {
+    // Depth alone lies too — a pool with TVL but no trades (wbCOIN: $1.9k
+    // depth, $1/day volume) cannot actually absorb a sale. Require both
+    // depth >= 10x debt and 24h volume >= the debt itself.
+    const { usd: liq, vol24 } = await exitLiquidity(p.market.collateralAsset?.address ?? '');
+    if (liq >= 0 && (liq < t.debtUsd * 10 || vol24 < t.debtUsd)) {
+      log('info', 'skipped: exit too illiquid or volume-less', {
         market: `${p.market.collateralAsset?.symbol}/${p.market.loanAsset?.symbol}`,
-        debtUsd: t.debtUsd, estBonusUsd: bonus, dexLiquidityUsd: Math.round(liq),
+        debtUsd: t.debtUsd, estBonusUsd: bonus,
+        dexLiquidityUsd: Math.round(liq), dexVol24Usd: Math.round(vol24),
       });
       continue;
     }
@@ -132,10 +139,16 @@ async function poll() {
   }
 
   // Positions gone from the eligible set were liquidated (or recovered).
+  // Positions that SURVIVE a full day are the opposite signal: the entire
+  // professional market has examined and refused them — a hidden defect we
+  // haven't identified yet. The pros' silence is data.
   for (const [key, t] of tracked) {
     if (!liveKeys.has(key)) {
       cleared.push((now - t.firstSeen) / 1000);
       tracked.delete(key);
+    } else if (!t.trapSuspect && now - t.firstSeen > 24 * 60 * 60 * 1000) {
+      t.trapSuspect = true;
+      log('info', 'pros silent >24h — hidden trap likely', { key, debtUsd: t.debtUsd });
     }
   }
 
@@ -148,6 +161,7 @@ async function poll() {
       clearedPositions: cleared.length,
       medianSecondsToClear: med === null ? null : Math.round(med),
       stillTracked: tracked.size,
+      trapSuspects: [...tracked.values()].filter((t) => t.trapSuspect).length,
     });
     cleared = []; lastSummary = now;
   }

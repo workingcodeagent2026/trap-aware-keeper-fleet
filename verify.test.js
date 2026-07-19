@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
-import { sumTokenReceived, isRewardHonest } from './verify.js';
+import { sumTokenReceived, sumAllTransfersTo, isRewardHonest, classifyPayout } from './verify.js';
 
 const WETH = '0x4200000000000000000000000000000000000006';
 const ME = '0x00000000000000000000000000000000DeaDBeef';
@@ -40,4 +40,41 @@ test('dishonest when payout is a fraction of prediction', () => {
 
 test('zero prediction is trivially honest', () => {
   assert.equal(isRewardHonest(0n, 0n), true);
+});
+
+test('sumAllTransfersTo groups by token', () => {
+  const logs = [
+    transferLog(WETH, ME, 100n),
+    transferLog(OTHER, ME, 7n),
+    transferLog(OTHER, ME, 3n),
+    transferLog(WETH, OTHER, 999n),
+  ];
+  assert.deepEqual(sumAllTransfersTo(logs, ME), {
+    [WETH.toLowerCase()]: 100n,
+    [OTHER.toLowerCase()]: 10n,
+  });
+});
+
+test('full payout classifies honest', () => {
+  assert.equal(classifyPayout({ actualWei: 1000n, predictedWei: 1000n }), 'honest');
+});
+
+test('short payout + collapsed pending = raced, not liar', () => {
+  assert.equal(classifyPayout({
+    actualWei: 1n, predictedWei: 1000n, rewardAfterWei: 0n,
+  }), 'raced');
+});
+
+test('short payout + other tokens received = wrong_token', () => {
+  assert.equal(classifyPayout({
+    actualWei: 0n, predictedWei: 1000n, rewardAfterWei: 900n,
+    otherTokensReceived: { '0xtoken': 5n },
+  }), 'wrong_token');
+});
+
+test('short payout + still promising big = liar', () => {
+  assert.equal(classifyPayout({
+    actualWei: 1n, predictedWei: 1000n, rewardAfterWei: 900n,
+    otherTokensReceived: {},
+  }), 'liar');
 });

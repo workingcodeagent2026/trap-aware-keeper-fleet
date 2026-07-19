@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { ethers } from 'ethers';
 import { EXECUTE_TRANSACTIONS, evaluateEconomics } from './safety.js';
 import { makeL1FeeEstimator } from './gas.js';
-import { sumTokenReceived, isRewardHonest } from './verify.js';
+import { sumTokenReceived, sumAllTransfersTo, classifyPayout } from './verify.js';
 
 // Per-chain target lists: TARGETS_FILE=targets.optimism.js for a second chain.
 const { TARGETS, BEEFY_STRATEGY_ABI } = await import(`./${process.env.TARGETS_FILE || 'targets.js'}`);
@@ -130,14 +130,34 @@ async function tryStrategy(s, ctx) {
     await notify(`📤 ${s.cfg.name} harvest sent\n${tx.hash}`);
     const rc = await tx.wait();
     // Trust-but-verify: compare what actually landed in the wallet against
-    // the callReward() prediction. Liars get one tx, then never again.
+    // the callReward() prediction. A short payout has three explanations —
+    // we were front-run (pending reward collapsed: forgivable), the strategy
+    // paid in a token we don't watch (unvaluable: blacklist), or it simply
+    // lied (still promising big after paying dust: blacklist).
     const actualWei = sumTokenReceived(rc.logs, WRAPPED_NATIVE, self);
-    if (!isRewardHonest(actualWei, rewardWei, rewardHonestyMilli)) {
-      s.blacklisted = true;
-      log('error', 'callReward overstated payout — strategy blacklisted', {
-        name: s.cfg.name, hash: tx.hash, predictedEth: eth(rewardWei), actualEth: eth(actualWei),
+    const rewardAfterWei = await s.contract.callReward().catch(() => undefined);
+    const others = sumAllTransfersTo(rc.logs, self);
+    delete others[WRAPPED_NATIVE.toLowerCase()];
+    const verdict2 = classifyPayout({
+      actualWei, predictedWei: rewardWei, rewardAfterWei,
+      otherTokensReceived: others, minRatioMilli: rewardHonestyMilli,
+    });
+    if (verdict2 === 'raced') {
+      s.racedCount = (s.racedCount ?? 0) + 1;
+      log('warn', 'Harvest raced — front-run by a faster bot, not blacklisting', {
+        name: s.cfg.name, hash: tx.hash, predictedEth: eth(rewardWei),
+        actualEth: eth(actualWei), racedCount: s.racedCount,
       });
-      await notify(`🚫 ${s.cfg.name} BLACKLISTED\nPromised ${eth(rewardWei)} ETH, paid ${eth(actualWei)}\n${tx.hash}`);
+      return;
+    }
+    if (verdict2 !== 'honest') {
+      s.blacklisted = true;
+      log('error', `payout ${verdict2} — strategy blacklisted`, {
+        name: s.cfg.name, hash: tx.hash, predictedEth: eth(rewardWei), actualEth: eth(actualWei),
+        rewardAfterEth: rewardAfterWei === undefined ? null : eth(rewardAfterWei),
+        otherTokens: Object.keys(others),
+      });
+      await notify(`🚫 ${s.cfg.name} BLACKLISTED (${verdict2})\nPromised ${eth(rewardWei)} ETH, paid ${eth(actualWei)}\n${tx.hash}`);
       return;
     }
     log('info', 'Harvest confirmed', { name: s.cfg.name, hash: tx.hash, block: rc.blockNumber, actualEth: eth(actualWei) });
