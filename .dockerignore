@@ -1,0 +1,7 @@
+# Never bake secrets or repo history into image layers.
+# Runtime config comes exclusively from compose env_file.
+.env
+.env.*
+.git
+node_modules
+*.log
